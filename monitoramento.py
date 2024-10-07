@@ -324,7 +324,7 @@ def monitoramento():
 
     # código para mostrar monitoramento
 
-    if st.button("Atualizar gráficos para {tabela}", key=f"att_{tabela}"):
+    if st.button(f"Atualizar gráficos para {tabela}", key=f"att_{tabela}"):
       df = None
       conn = None
       try:
@@ -335,7 +335,7 @@ def monitoramento():
                 user=fonte.get("usuario"),
                 password=fonte.get("senha")
             )
-        df = pd.read_sql_query(f"SELECT * FROM cdc.monitor WHERE tabela='{tabela}'", conn)
+        df = pd.read_sql_query(f"SELECT * FROM cdc.monitor WHERE tabela='{tabela}' ORDER BY tempo ASC", conn)
         conn.close()
       except Exception as e:
         print(f"Erro ao executar consulta: {e}")
@@ -344,21 +344,33 @@ def monitoramento():
           conn.close()
       # Cria os gráficos
       fig_volume = px.line(
-          df, x="tempo", y="volume", title="Volume x Tempo", markers=True
-      )
-      fig_relevancia = px.line(
-          df, x="tempo", y="relevancia", title="Relevância x Tempo", markers=True
+          df, 
+          x="tempo", 
+          y="volume", 
+          title="Volume x Tempo", 
+          markers=True  # Mantemos os marcadores para todos os pontos
       )
 
-      # Destaca os pontos onde 'ativou' é True
-      fig_volume.update_traces(
-          marker=dict(color="red", size=10),
-          selector=dict(arg="where", ativou=True),
+      # Cria uma lista de cores para os marcadores
+      cores_volume = ['red' if ativado else 'blue' for ativado in df["ativou"]] 
+      fig_volume.update_traces(marker=dict(color=cores_volume, size=10))
+
+      # Repetimos para o outro gráfico
+      fig_relevancia = px.line(
+          df, 
+          x="tempo", 
+          y="relevancia", 
+          title="Relevância x Tempo", 
+          markers=True
       )
-      fig_relevancia.update_traces(
-          marker=dict(color="red", size=10),
-          selector=dict(arg="where", ativou=True),
-      )
+
+      # Cria uma lista de cores para os marcadores
+      cores_relevancia = ['red' if ativado else 'blue' for ativado in df["ativou"]]
+      fig_relevancia.update_traces(marker=dict(color=cores_relevancia, size=10))
+
+      # Adiciona linhas extras para delta_v e delta_r (mantemos essa parte)
+      fig_volume.add_scatter(x=df["tempo"], y=df["delta_v"], mode='lines', name='Delta Volume')
+      fig_relevancia.add_scatter(x=df["tempo"], y=df["delta_r"], mode='lines', name='Delta Relevância')
 
       # Exibe os gráficos no Streamlit
       col1, col2 = st.columns(2)
