@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 import psycopg2
 import threading
@@ -5,6 +6,7 @@ import time
 import queue
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 from datetime import datetime
+import plotly.express as px
 
 
 def consultar_relevancia(host, porta, usuario, senha, database, tabela):
@@ -34,6 +36,9 @@ def consultar_relevancia(host, porta, usuario, senha, database, tabela):
     FROM cdc.cdc
     WHERE tabela='{tabela}'"""
 
+  referencias_tabela = 0
+  total_tabela = 0
+
   try:
     conn = psycopg2.connect(
             host=host,
@@ -52,29 +57,32 @@ def consultar_relevancia(host, porta, usuario, senha, database, tabela):
     cursor.execute(fk_query)
     tables = cursor.fetchall()
 
-    for table in tables:
+    if len(ids) > 0:
+      for table in tables:
 
-      coluna_fk = table[1]
-      tabela_ref = table[0]
+        coluna_fk = table[1]
+        tabela_ref = table[0]
 
 
-      ref_query = f"""
-      SELECT COUNT({coluna_fk})
-      FROM {tabela_ref}
-      WHERE {coluna_fk} IN ({", ".join(map(lambda x: f"'{str(x[0])}'", ids))})
-      """
+        ref_query = f"""
+        SELECT COUNT({coluna_fk})
+        FROM {tabela_ref}
+        WHERE {coluna_fk} IN ({", ".join(map(lambda x: f"'{str(x[0])}'", ids))})
+        """
 
-      total_query = f"""
-      SELECT COUNT(*)
-      FROM {tabela_ref}
-      """
+        total_query = f"""
+        SELECT COUNT(*)
+        FROM {tabela_ref}
+        """
 
-      # executa a query que conta a quantidade de referencias que o ID tem
-      cursor.execute(ref_query, (ids,))
-      referencias_tabela = cursor.fetchall()[0][0]
+        # executa a query que conta a quantidade de referencias que o ID tem
+        cursor.execute(ref_query, (ids,))
+        referencias_tabela += cursor.fetchall()[0][0]
 
-      cursor.execute(total_query)
-      total_tabela = cursor.fetchall()[0][0]
+        cursor.execute(total_query)
+        total_tabela += cursor.fetchall()[0][0]
+    else:
+       return 0
 
   except (Exception, psycopg2.Error) as error:
       print(f"Erro ao conectar-se com o banco de dados: {error}")
@@ -82,7 +90,10 @@ def consultar_relevancia(host, porta, usuario, senha, database, tabela):
       return 0
   finally:
     conn.close()
-    return referencias_tabela/total_tabela
+    if total_tabela != 0:
+      return referencias_tabela/total_tabela
+    else:
+      return 0
 
 
 def consultar_volume(host, porta, usuario, senha, database, tabela):
@@ -115,12 +126,12 @@ def consultar_volume(host, porta, usuario, senha, database, tabela):
 class MonitorBancoDeDados(threading.Thread):
   def __init__(self, fonte, dw, tabela, pk, tempo_espera, relevancia_minima, volume_minimo):
     super().__init__()
-    self.fonte_host = fonte.get("host")
+    self.fonte_host = fonte.get("ip")
     self.fonte_porta = fonte.get("porta")
     self.fonte_usuario = fonte.get("usuario")
     self.fonte_senha = fonte.get("senha")
     self.fonte_database = fonte.get("db")
-    self.dw_host = dw.get("host")
+    self.dw_host = dw.get("ip")
     self.dw_porta = dw.get("porta")
     self.dw_usuario = dw.get("usuario")
     self.dw_senha = dw.get("senha")
@@ -172,12 +183,15 @@ class MonitorBancoDeDados(threading.Thread):
 
         else:
           ativou = False
-        monitor_query = f"""
+        monitor_query = """
         INSERT INTO cdc.monitor(
           relevancia, volume, ativou, delta_r, delta_v, tabela, seq, tempo)
-        VALUES ({relevancia_atual}, {volume_atual}, {ativou}, {self.relevancia_minima}, {self.volume_minimo}, '{self.tabela}', {count}, NOW());
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW());
         """
-        cursor.execute(monitor_query)
+        cursor.execute(monitor_query, (relevancia_atual, volume_atual, ativou, 
+                                       self.relevancia_minima, self.volume_minimo, 
+                                       self.tabela, count))
+        conn.commit()
       except (Exception, psycopg2.Error) as error:
         print(f"Erro ao conectar-se com o banco de dados: {error}")
         conn.close()
@@ -213,17 +227,13 @@ class MonitorBancoDeDados(threading.Thread):
             )
             cursor = conn.cursor()
 
-            print()
-            print(query)
-            print(valores)
-            print()
-
             if valores:
                 cursor.execute(query, valores)
             else:
                 cursor.execute(query)
 
             conn.commit()  # Faz commit após cada execução
+            ls_ids.append(row[0])
         except Exception as e:
             print(f"Erro ao executar consulta: {e}")
         finally:
@@ -244,8 +254,9 @@ class MonitorBancoDeDados(threading.Thread):
               )
           cursor = conn.cursor()
           placeholders = ', '.join(['%s'] * len(ls_ids))
-          query_delete = f"""DELETE FROM cdc.cdc WHERE id_tupla IN ({placeholders})"""
+          query_delete = f"""DELETE FROM cdc.cdc WHERE id IN ({placeholders})"""
           cursor.execute(query_delete, ls_ids)
+          conn.commit()
         except (Exception, psycopg2.Error) as error:
           print(f"Erro ao conectar-se com o banco de dados: {error}")
           conn.close()
@@ -265,39 +276,97 @@ def monitoramento():
 
   monitor = []
 
+  
+  monitorando = False
+
   fonte = st.session_state.fonte
   dw = st.session_state.dw
-  tabela = "empresa"
-
-  map = st.session_state.mapeamento[tabela]
-  relevancia = map.get("relevancia")
-  volume = map.get("volume")
-  tempo = map.get("tempo")
-  pk = map.get('pk')
-
-  if "monitorando" not in st.session_state:
-    st.session_state.monitorando = False
+  mapeamento = st.session_state.mapeamento
 
   if "ficha_thread" not in st.session_state:
-    st.session_state.ficha_thread = None
+    st.session_state.ficha_thread = {tabela: {"monitorando": False} for tabela in mapeamento.keys()}
 
-
-  if st.button("Iniciar Monitoramento") and not st.session_state.monitorando:
-    st.session_state.ficha_thread = MonitorBancoDeDados(
-        fonte, dw, tabela, pk, tempo, relevancia, volume
-    )
-    st.session_state.ficha_thread.start()
-    st.session_state.monitorando = True
-    st.rerun()
-
-  if st.button("Parar Monitoramento") and st.session_state.monitorando:
-    st.session_state.ficha_thread.parar()
-    st.session_state.ficha_thread.join()  # Aguarda a thread finalizar
-    st.session_state.monitorando = False
-    st.rerun()
   
+  for tabela, value in mapeamento.items():
+    map = st.session_state.mapeamento[tabela]
+    relevancia = map.get("relevancia")
+    volume = map.get("volume")
+    tempo = map.get("tempo")
+    pk = map.get('pk')
 
-  # ... (Lógica para exibir informações do monitoramento na UI)
+    if "monitorando" not in st.session_state:
+      st.session_state.monitorando = False
+
+    ficha_threads = st.session_state.ficha_thread
+    ficha_tabela = ficha_threads.get(tabela)
+    if ficha_tabela:
+      monitorando = ficha_tabela.get("monitorando")
+
+
+    if st.button("Iniciar Monitoramento", key=f"iniciar_monitoramento_{tabela}") and not monitorando:
+      ficha_tabela["thread"] = MonitorBancoDeDados(
+          fonte, dw, tabela, pk, tempo, relevancia, volume
+      )
+      ficha_tabela["thread"].start()
+      ficha_tabela["monitorando"] = True
+      ficha_threads[tabela] = ficha_tabela
+      st.session_state.ficha_thread = ficha_threads
+      st.rerun()
+
+    if st.button("Parar Monitoramento", key=f"parar_monitoramento_{tabela}") and monitorando:
+      ficha_tabela["thread"].parar()
+      ficha_tabela["thread"].join()  # Aguarda a thread finalizar
+      ficha_tabela["monitorando"] = False
+      ficha_threads[tabela] = ficha_tabela
+      st.session_state.ficha_thread = ficha_threads
+      st.rerun()
+
+
+    # código para mostrar monitoramento
+
+    if st.button("Atualizar gráficos para {tabela}", key=f"att_{tabela}"):
+      df = None
+      conn = None
+      try:
+        conn = psycopg2.connect(
+                host=fonte.get("ip"),
+                port=fonte.get("porta"),
+                database=fonte.get("db"),
+                user=fonte.get("usuario"),
+                password=fonte.get("senha")
+            )
+        df = pd.read_sql_query(f"SELECT * FROM cdc.monitor WHERE tabela='{tabela}'", conn)
+        conn.close()
+      except Exception as e:
+        print(f"Erro ao executar consulta: {e}")
+      finally:
+        if conn:
+          conn.close()
+      # Cria os gráficos
+      fig_volume = px.line(
+          df, x="tempo", y="volume", title="Volume x Tempo", markers=True
+      )
+      fig_relevancia = px.line(
+          df, x="tempo", y="relevancia", title="Relevância x Tempo", markers=True
+      )
+
+      # Destaca os pontos onde 'ativou' é True
+      fig_volume.update_traces(
+          marker=dict(color="red", size=10),
+          selector=dict(arg="where", ativou=True),
+      )
+      fig_relevancia.update_traces(
+          marker=dict(color="red", size=10),
+          selector=dict(arg="where", ativou=True),
+      )
+
+      # Exibe os gráficos no Streamlit
+      col1, col2 = st.columns(2)
+      with col1:
+          st.plotly_chart(fig_volume, use_container_width=True)
+      with col2:
+          st.plotly_chart(fig_relevancia, use_container_width=True)
+  
 
   back = st.button("Anterior")
   if back:

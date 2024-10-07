@@ -41,7 +41,7 @@ def config_mapeamento():
 
             with col1:
                 relevancia = st.number_input("Relevância (0-1):", min_value=0.0, max_value=1.0, value=0.5, key=f"relevancia_{table}")
-                pk = st.text_input("chave primária", "")
+                pk = st.text_input("chave primária", "", key=f"pk_{table}")
             with col2:
                 volume = st.number_input("Volume:", min_value=1, value=100, key=f"volume_{table}")
             with col3:
