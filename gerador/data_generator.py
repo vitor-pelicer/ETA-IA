@@ -10,14 +10,15 @@ DB_USER = "postgres"
 DB_PASSWORD = "postgres"
 
 # Taxas de inserção (em segundos)
-TAXA_INSERCAO_EMPRESA = 30
-TAXA_INSERCAO_FICHA = 15
+TAXA_INSERCAO_EMPRESA = 1
+TAXA_INSERCAO_FICHA = 1
 
-fator_empresa = 5
-fator_ficha = 20
+fator_empresa = 7
+fator_ficha = 12
 
-# Número máximo de empresas
-MAX_EMPRESAS = 130
+# Limite de inserções na tabela empresa
+LIMITE_INSERCOES_EMPRESA = 200
+LIMITE_INSERCOES_FICHA = 1000
 
 # Faker para gerar dados falsos
 fake = Faker('pt_BR')
@@ -101,43 +102,39 @@ def atualizar_dados_empresa(conn, data):
 
 def main():
     cnpjs_validos = []
-    empresas_inseridas = 0
+    total_insercoes_empresa = 0
+    total_insercoes_ficha = 0
     while True:
         try:
             conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD)
-            
+
             while True:
-                # Inserir novas empresas até atingir o limite
-                if empresas_inseridas < MAX_EMPRESAS:
+                # Inserir dados na tabela empresa até atingir o limite
+                if total_insercoes_empresa < LIMITE_INSERCOES_EMPRESA:
                     if int(time.time()) % TAXA_INSERCAO_EMPRESA == 0:
                         for i in range(fator_empresa):
                             empresa_data = gerar_dados_empresa()
                             inserir_dados(conn, empresa_data, 'empresa')
                             cnpjs_validos.append(empresa_data['cnpj'])
-                            empresas_inseridas += 1
-                            print(f"Inseriu empresa {empresas_inseridas}")
-                            if empresas_inseridas >= MAX_EMPRESAS:
-                                break
-
-                # Atualizar empresas existentes 
-                if int(time.time()) % TAXA_INSERCAO_EMPRESA == 0 and empresas_inseridas >= MAX_EMPRESAS:
-                    for cnpj in cnpjs_validos:
-                        empresa_data = {'cnpj': cnpj}
-                        empresa_data.update({
-                            'nome': fake.company(),
-                            'tipo_empregador': random.choice(['Publica', 'Privada', 'Mista', 'ONG']),
-                            'verificado': random.choice([True, False]),
-                            'ativo': random.choice([True, False])
-                        })
-                        atualizar_dados_empresa(conn, empresa_data)
-                        print(f"Atualizou empresa {cnpj}")
+                            total_insercoes_empresa += 1
+                            print("Inserido em empresa:", empresa_data['cnpj'])
+                else:
+                    # Após o limite, apenas atualiza empresas existentes
+                    if int(time.time()) % TAXA_INSERCAO_EMPRESA == 0:
+                        for i in range(fator_empresa):
+                            empresa_data = gerar_dados_empresa()
+                            empresa_data['cnpj'] = random.choice(cnpjs_validos) # Seleciona um CNPJ existente
+                            atualizar_dados_empresa(conn, empresa_data)
+                            print("Atualizado em empresa:", empresa_data['cnpj'])
 
                 # Inserir dados na tabela ficha
-                if int(time.time()) % TAXA_INSERCAO_FICHA == 0:
-                    for i in range(fator_ficha):
-                        ficha_data = gerar_dados_ficha(cnpjs_validos)
-                        inserir_dados(conn, ficha_data, 'ficha')
-                        print("Inseriu em ficha")
+                if total_insercoes_ficha < LIMITE_INSERCOES_FICHA:
+                    if int(time.time()) % TAXA_INSERCAO_FICHA == 0:
+                        for i in range(fator_ficha):
+                            ficha_data = gerar_dados_ficha(cnpjs_validos)
+                            inserir_dados(conn, ficha_data, 'ficha')
+                            total_insercoes_ficha += 1
+                            print("Inserido em ficha")
 
                 time.sleep(1)  # Aguarda 1 segundo
         except Exception as e:
